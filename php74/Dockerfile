@@ -20,7 +20,6 @@ RUN apt-get update \
  bzip2 \
  libbz2-dev \
  zlib1g-dev \
- mysql-client \
  libfontconfig \
  libfreetype6-dev \
  libjpeg62-turbo-dev \
@@ -40,10 +39,8 @@ RUN apt-get update \
 # Install Node (with NPM), and Yarn (via package manager for Debian)
 #
 # https://nodejs.org/en/download/package-manager/#debian-and-ubuntu-based-linux-distributions
-RUN curl -sL https://deb.nodesource.com/setup_8.x | bash -
-RUN apt-get update \
- && apt-get install -y \
- nodejs
+RUN curl -sL https://deb.nodesource.com/setup_14.x | bash -
+RUN apt-get update && apt-get install -y nodejs
 RUN npm install -g yarn
 
 #
@@ -54,35 +51,23 @@ ENV COMPOSER_ALLOW_SUPERUSER 1
 ENV COMPOSER_HOME /composer
 ENV COMPOSER_VERSION 1.10.8
 
-RUN curl -s -f -L -o /tmp/installer.php https://raw.githubusercontent.com/composer/getcomposer.org/da290238de6d63faace0343efbdd5aa9354332c5/web/installer \
- && php -r " \
-    \$signature = '669656bab3166a7aff8a7506b8cb2d1c292f042046c5a994c43155c0be6190fa0355160742ab2e1c88d40d5be660b410'; \
-    \$hash = hash('SHA384', file_get_contents('/tmp/installer.php')); \
-    if (!hash_equals(\$signature, \$hash)) { \
-        unlink('/tmp/installer.php'); \
-        echo 'Integrity check failed, installer is either corrupt or worse.' . PHP_EOL; \
-        exit(1); \
-    }" \
- && php /tmp/installer.php --no-ansi --install-dir=/usr/bin --filename=composer --version=${COMPOSER_VERSION} \
- && rm /tmp/installer.php \
- && composer --ansi --version --no-interaction \
- && composer global require drush/drush --prefer-dist
-
-
-#
-# WP-CLI
-#
-RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-RUN php wp-cli.phar --info --allow-root
-RUN chmod +x wp-cli.phar
-RUN mv wp-cli.phar /usr/local/bin/wp
-
+RUN EXPECTED_CHECKSUM="$(wget -q -O - https://composer.github.io/installer.sig)" \
+php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');" \
+ACTUAL_CHECKSUM="$(php -r "echo hash_file('sha384', 'composer-setup.php');")" \
+if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ] \
+then \
+    >&2 echo 'ERROR: Invalid installer checksum' \
+    rm composer-setup.php \
+    exit 1 \
+fi \
+php composer-setup.php --quiet \
+RESULT=$? \
+rm composer-setup.php
 
 #
 # Install additional php extensions
 #
-RUN docker-php-ext-configure gd --with-freetype-dir=/usr/include/ --with-jpeg-dir=/usr/include/ \
-    && docker-php-ext-configure ldap --with-libdir=lib/x86_64-linux-gnu \
+RUN docker-php-ext-configure ldap --with-libdir=lib/x86_64-linux-gnu \
     && docker-php-ext-install -j$(nproc) \
       bcmath \
       bz2 \
@@ -93,7 +78,6 @@ RUN docker-php-ext-configure gd --with-freetype-dir=/usr/include/ --with-jpeg-di
       gettext \
       intl \
       ldap \
-      mcrypt \
       mysqli \
       opcache \
       pcntl \
@@ -103,19 +87,15 @@ RUN docker-php-ext-configure gd --with-freetype-dir=/usr/include/ --with-jpeg-di
       sockets \
       sysvmsg \
       sysvsem \
-      sysvshm \
-      zip \
-    && pecl install redis apcu \
-    && docker-php-ext-enable redis apcu
+      sysvshm
 
-#
-# PHP xdebug for phpunit code coverage report
-#
-RUN pecl install xdebug \
-    && echo "zend_extension=$(find /usr/local/lib/php/extensions/ -name xdebug.so)" > $PHP_INI_DIR/conf.d/xdebug.ini \
-    && echo "xdebug.remote_enable=on" >> $PHP_INI_DIR/conf.d/xdebug.ini \
-    && echo "xdebug.remote_autostart=off" >> $PHP_INI_DIR/conf.d/xdebug.ini
+RUN apt-get install -y \
+        libzip-dev \
+        zip \
+  && docker-php-ext-install zip
 
+RUN pecl install mcrypt-1.0.3 \
+    docker-php-ext-enable mcrypt
 
 #
 # PHP configuration
@@ -138,11 +118,13 @@ RUN a2enmod rewrite headers expires ssl \
   # Preemptively add a user 1000, for use with $APACHE_RUN_USER on osx
   && adduser --uid 1000 --gecos 'My OSX User' --disabled-password osxuser
 
+RUN mkdir -p /root/work/
+WORKDIR /root/work/
 
-#
-# Python: mkdocs
-#
-RUN pip install mkdocs
+# install git
+RUN apt-get -y update && apt-get -y install git && apt-get -y install lftp && apt-get -y install git-ftp
 
+# slim down image
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /usr/share/man/?? /usr/share/man/??_*
 
 COPY test.sh /test.sh
